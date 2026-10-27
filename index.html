@@ -151,7 +151,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.9.0 &middot; 27.10.2026</span>
+    <span class="build">build 1.9.2 &middot; 27.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -710,16 +710,18 @@ function stop(){
     setTimeout(()=>{ if(masterGain) masterGain.gain.setTargetAtTime(volVal,ac.currentTime,.2); },700);
   } else done();
 }
-function next(){
+/* force=true kun siirrytään biisin loputtua: silloin soittotila on juuri
+   nollattu, mutta toiston pitää jatkua seuraavasta raidasta. */
+function next(force){
   if (S.bgActive){
     const l0=LIST[S.src];
     if (IDX[S.src]<l0.length-1) bgLoadIndex(S.src,IDX[S.src]+1);
     else if ($('loopOn').checked && l0.length) bgLoadIndex(S.src,0);
     return;
   }
-  const l=LIST[S.src];
-  if (IDX[S.src]<l.length-1) load(S.src,IDX[S.src]+1,S.playing);
-  else if ($('loopOn').checked && l.length) load(S.src,0,S.playing);
+  const l=LIST[S.src], go=force||S.playing;
+  if (IDX[S.src]<l.length-1) load(S.src,IDX[S.src]+1,go);
+  else if ($('loopOn').checked && l.length) load(S.src,0,go);
 }
 function prev(){
   if (S.bgActive){
@@ -740,12 +742,14 @@ $('btnPrev').addEventListener('click',prev);
   EL[k].addEventListener('pause',()=>{ if(S.src===k && !S.bgActive){S.playing=false;applyTape();} });
   EL[k].addEventListener('ended',()=>{
     if (S.src!==k) return;
-    S.playing=false; applyTape();
+    applyTape();
     const l=LIST[k], last=IDX[k]>=l.length-1;
-    if (BUILD.rec && S.recording && ($('recMode').value==='per' || (last && !$('loopOn').checked))){
-      pendingNext = !last || $('loopOn').checked; stopRec(); return;
+    const jatkuu = !last || $('loopOn').checked;
+    if (BUILD.rec && S.recording && ($('recMode').value==='per' || !jatkuu)){
+      pendingNext = jatkuu; stopRec(); return;
     }
-    next();
+    if (jatkuu) next(true);
+    else { S.playing=false; applyTape(); }
   });
 });
 let pendingNext=false;
@@ -1711,6 +1715,8 @@ function updateVU(){
 function frame(t){
   const dt=Math.min(.05,(t-S.last)/1000||.016); S.last=t;
   syncBar();
+  // Vahti: etualalla varjosoitin on aina äänetön, taustalla se on ainoa ääni.
+  if (!S.bgActive && !BG.paused && BG.volume>0) BG.volume=0;
   HOT=[];
   const W=cv.width,H=cv.height, p=S.format==='9:16';
   updateVU(); spin(dt);
@@ -1925,11 +1931,21 @@ function fromBackground(){
   if (!S.bgActive) return;
   const el=cur(), live=(S.src==='tuner'), t=BG.currentTime||0;
   S.bgActive=false;
-  // Raita on voinut vaihtua taskussa, jolloin ketjun elementti ei ole
-  // vielä valmis. Odotetaan metatiedot ennen hyppyä ja toistoa.
+  // Mykistys heti, ei vasta kun ketju vahvistaa lähteneensä: muuten
+  // molemmat kuuluvat sen hetken jonka toiston aloitus kestää.
+  BG.volume=0;
+  // Varmista että ketju on samassa raidassa kuin varjo oli.
+  if (!live){
+    const it=LIST[S.src] && LIST[S.src][IDX[S.src]];
+    if (it && el.src!==it.url){ try{ el.src=it.url; el.load(); }catch(e){} }
+  }
+  // Raita on voinut vaihtua taskussa, jolloin elementti ei ole vielä valmis.
   const go=()=>{
     if (!live){ try{ el.currentTime=t; }catch(e){} }
-    el.play().then(()=>{ S.playing=true; BG.volume=0; }).catch(()=>{ BG.volume=0; });
+    el.play().then(()=>{ S.playing=true; }).catch(()=>{
+      // Ketju ei lähtenyt: palataan varjoon, ettei jäädä hiljaisuuteen.
+      S.bgActive=true; BG.volume=Math.min(1,Math.max(0,volVal));
+    });
   };
   if (el.readyState>=1) go();
   else el.addEventListener('loadedmetadata',go,{once:true});
