@@ -151,7 +151,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.8.2 &middot; 27.10.2026</span>
+    <span class="build">build 1.9.0 &middot; 27.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -549,6 +549,7 @@ function setVol(v){
   volVal=Math.max(0,Math.min(1.5,v));
   if(masterGain) masterGain.gain.setTargetAtTime(volVal,ac.currentTime,.02);
   if(S.bgActive) BG.volume=Math.min(1,volVal);
+  else if(!BG.paused) BG.volume=0;
 }
 function setBal(v){ balVal=Math.max(-1,Math.min(1,v)); if(panner) panner.pan.setTargetAtTime(balVal,ac.currentTime,.03); }
 function setBass(v){ bassVal=Math.max(-10,Math.min(10,v)); if(bassSh) bassSh.gain.setTargetAtTime(bassVal,ac.currentTime,.03); }
@@ -684,17 +685,17 @@ async function play(){
   if (off>0 && S.src!=='tuner' && el.currentTime<0.25){ try{ el.currentTime=off; }catch(e){} }
   try{ await el.play(); }catch(e){ setStatus('Toisto ei käynnistynyt: '+e.message,true); return; }
   bgv.play().catch(()=>{});
-  S.playing=true; applyTape(); keepAwake(true);
+  S.playing=true; applyTape(); keepAwake(true); startShadow();
   if (BUILD.rec && $('autoRec').checked && !S.recording) startRec();
   mediaSession();
 }
 function pause(){
-  keepAwake(false);
+  keepAwake(false); stopShadow();
   if (S.bgActive){ BG.pause(); S.playing=false; return; }
   cur().pause(); S.playing=false; applyTape();
 }
 function stop(){
-  keepAwake(false);
+  keepAwake(false); stopShadow();
   if (S.bgActive){ BG.pause(); S.bgActive=false; S.playing=false; return; }
   const el=cur();
   const done=()=>{ el.pause(); if(S.src!=='tuner') el.currentTime=0; el.playbackRate=1;
@@ -1876,9 +1877,38 @@ if (!('wakeLock' in navigator)){
    ääniketjun läpi. EQ ja mittarit ovat silloin pimeinä, mutta musiikki
    jatkuu. Etualalle palatessa toisto palaa ketjuun samasta kohdasta. */
 function bgItem(){ const l=LIST[S.src]; return l?l[IDX[S.src]]:null; }
+/* Varjosoitin. iOS ei anna KÄYNNISTÄÄ toistoa sillä hetkellä kun sivu
+   piilotetaan, mutta jo soiva elementti saa jatkaa. Siksi varasoitin
+   pannaan soimaan äänettömänä heti playn kanssa, ja lukitushetkellä
+   siltä vain nostetaan äänenvoimakkuus — mitään ei aloiteta taustalla. */
+function startShadow(){
+  if (!$('bgPlay').checked) return;
+  if (S.src==='tuner') return;                 // striimiä ei kannata hakea kahdesti
+  const el=cur(), src=el.currentSrc||el.src;
+  if (!src) return;
+  if (BG.currentSrc===src && !BG.paused){ BG.volume=0; return; }  // soi jo
+  BG.src=src; BG.volume=0;
+  const sync=()=>{ try{ BG.currentTime=el.currentTime||0; }catch(e){} };
+  BG.addEventListener('loadedmetadata',sync,{once:true});
+  BG.load();
+  BG.play().then(sync).catch(()=>{});          // ei haittaa vaikka ei lähde
+}
+function stopShadow(){
+  if (S.bgActive) return;                      // taustalla se on varsinainen soitin
+  try{ BG.pause(); }catch(e){}
+}
 function toBackground(){
   if (!$('bgPlay').checked || !S.playing || S.bgActive) return;
-  const el=cur(), src=el.currentSrc||el.src;
+  const el=cur();
+  if (!BG.paused && BG.currentSrc){
+    // Varjosoitin on jo käynnissä: pelkkä äänenvoimakkuus ja vaihto.
+    S.bgActive=true;
+    BG.volume=Math.min(1,Math.max(0,volVal));
+    el.pause();
+    return;
+  }
+  // Varjoa ei ollut — kokeillaan silti käynnistää. Voi epäonnistua iOS:ssä.
+  const src=el.currentSrc||el.src;
   if (!src) return;
   const live=(S.src==='tuner'), t=el.currentTime||0;
   BG.src=src; BG.volume=Math.min(1,Math.max(0,volVal));
@@ -1886,18 +1916,23 @@ function toBackground(){
   BG.addEventListener('loadedmetadata',seek,{once:true});
   BG.load();
   BG.play().then(()=>{
-    S.bgActive=true;      // ennen pausea, ettei pause-kuuntelija nollaa soittotilaa
+    S.bgActive=true;
     seek(); el.pause();
-    setTimeout(seek,120); // varmistus, jos media ei ollut vielä valmis
+    setTimeout(seek,120);
   }).catch(()=>{ S.bgActive=false; });
 }
 function fromBackground(){
   if (!S.bgActive) return;
   const el=cur(), live=(S.src==='tuner'), t=BG.currentTime||0;
   S.bgActive=false;
-  BG.pause();
-  if (!live){ try{ el.currentTime=t; }catch(e){} }
-  el.play().then(()=>{ S.playing=true; }).catch(()=>{});
+  // Raita on voinut vaihtua taskussa, jolloin ketjun elementti ei ole
+  // vielä valmis. Odotetaan metatiedot ennen hyppyä ja toistoa.
+  const go=()=>{
+    if (!live){ try{ el.currentTime=t; }catch(e){} }
+    el.play().then(()=>{ S.playing=true; BG.volume=0; }).catch(()=>{ BG.volume=0; });
+  };
+  if (el.readyState>=1) go();
+  else el.addEventListener('loadedmetadata',go,{once:true});
 }
 /* Raidan vaihto taustalla: seuraava tiedosto suoraan taustasoittimeen. */
 function bgLoadIndex(k,i){
