@@ -151,7 +151,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.4.1 &middot; 27.10.2026</span>
+    <span class="build">build 1.5.0 &middot; 27.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -199,7 +199,11 @@ a.dl:hover{border-color:var(--green)}
           <input type="text" id="brQ" placeholder="Hae asemia nimellä">
           <button id="brGo">Hae</button>
         </div>
-        <label class="chk"><input type="checkbox" id="brFi" checked> Vain suomalaiset</label>
+        <div class="row">
+          <label class="chk" style="margin:0;flex:1"><input type="checkbox" id="brFi" checked> Vain suomalaiset</label>
+          <button id="brTest">Testaa tulokset</button>
+          <button id="brAddOk">Lisää vihreät</button>
+        </div>
         <div class="lst" id="brList"></div>
         <div class="status" id="brStatus"></div>
         <div class="row"><input type="text" id="stName" placeholder="Aseman nimi"></div>
@@ -247,6 +251,12 @@ a.dl:hover{border-color:var(--green)}
         <h2>5 &middot; Kuva</h2>
         <div class="row"><label>Muoto</label>
           <div class="seg"><button id="fmt916" class="on">9:16</button><button id="fmt169">16:9</button></div>
+        </div>
+        <div class="row"><label>Analysaattori</label>
+          <div class="seg">
+            <button id="anOn" class="on">Näytä</button>
+            <button id="anOff">Piilota</button>
+          </div>
         </div>
         <div class="row"><label>Tausta</label>
           <select id="bgMode">
@@ -329,7 +339,8 @@ const S={
   bgImage:null, bgVideoCustom:null,
   reelAng:0, cassAng:0, last:0, peaks:null,
   vu:{l:0,r:0,lp:0,rp:0}, wowVis:0,
-  dialFreq:98.5, dialTarget:98.5, tuned:false, radioRaw:false, verifyId:0
+  dialFreq:98.5, dialTarget:98.5, tuned:false, radioRaw:false, verifyId:0,
+  anShow:true, anPeaks:null
 };
 const LIST={ reel:[], A:[], B:[] };
 const IDX={ reel:-1, A:-1, B:-1 };
@@ -772,9 +783,11 @@ function tune(i, playIt){
   setTimeout(()=>{ if(!settled) fail('aikakatkaisu'); }, 8000);
   el.load();
 }
-function testStation(i){
+/* Kokeilee salliiko osoite analyysin. Omalla mykällä soittimellaan,
+   joten soiva raita ei häiriinny. */
+function testUrl(u, ms){
   return new Promise(res=>{
-    const s=STATIONS[i], a=new Audio();
+    const a=new Audio();
     a.crossOrigin='anonymous'; a.muted=true; a.preload='metadata';
     let done=false;
     const fin=v=>{ if(done)return; done=true;
@@ -782,10 +795,11 @@ function testStation(i){
     a.addEventListener('loadedmetadata',()=>fin(true),{once:true});
     a.addEventListener('canplay',()=>fin(true),{once:true});
     a.addEventListener('error',()=>fin(false),{once:true});
-    setTimeout(()=>fin(false),9000);
-    a.src=s.u; a.load();
+    setTimeout(()=>fin(false), ms||9000);
+    a.src=u; a.load();
   });
 }
+function testStation(i){ return testUrl(STATIONS[i].u); }
 async function testAll(){
   $('stAll').disabled=true; $('stTest').disabled=true;
   for (let i=0;i<STATIONS.length;i++){
@@ -877,7 +891,10 @@ function renderBr(){
   const box=$('brList'); box.innerHTML='';
   brHits.forEach((s,i)=>{
     const d=document.createElement('div'); d.className='tr';
-    d.innerHTML='<span class="n">+</span><span class="t"></span><span class="d"></span>';
+    const st = s.ok===true?'<span class="st ok">mittarit</span>'
+             : s.ok===false?'<span class="st no">vain ääni</span>'
+             : (s.ok==='…'?'<span class="st">testataan</span>':'');
+    d.innerHTML='<span class="n">+</span><span class="t"></span>'+st+'<span class="d"></span>';
     d.querySelector('.t').textContent=s.n;
     d.querySelector('.d').textContent=[s.codec,s.bps?s.bps+'k':''].filter(Boolean).join(' ');
     d.addEventListener('click',async ()=>{
@@ -893,7 +910,40 @@ function renderBr(){
     box.appendChild(d);
   });
 }
+/* Testaa hakutulokset ennen lisäämistä, jotta listaan ei kerry roskaa.
+   Kolme rinnakkain, jotta kymmenien asemien läpikäynti ei kestä ikuisuutta. */
+async function brTestAll(){
+  if (!brHits.length){ $('brStatus').textContent='Hae ensin asemia.'; return; }
+  $('brTest').disabled=true; $('brAddOk').disabled=true;
+  const q=brHits.slice(); let done=0;
+  const worker=async()=>{
+    while(q.length){
+      const s=q.shift();
+      s.ok='…'; renderBr();
+      s.ok=await testUrl(s.u, 6000);
+      done++;
+      $('brStatus').textContent='Testattu '+done+'/'+brHits.length+'…';
+      renderBr();
+    }
+  };
+  await Promise.all([worker(),worker(),worker()]);
+  const greens=brHits.filter(s=>s.ok===true).length;
+  $('brTest').disabled=false; $('brAddOk').disabled=false;
+  $('brStatus').innerHTML='Valmis: <b>'+greens+'/'+brHits.length+'</b> asemaa sallii analyysin.'+
+    (greens?' Lisää ne napista tai napauttamalla yksitellen.':
+     ' Punaisetkin soivat, mutta ilman mittareita.');
+}
+function brAddGreens(){
+  const g=brHits.filter(s=>s.ok===true);
+  if (!g.length){ $('brStatus').textContent='Ei testattuja vihreitä. Paina ensin Testaa tulokset.'; return; }
+  let n=0;
+  g.forEach(s=>{ const i=addStation(s.n,s.u); if(i>=0){ STATIONS[i].st=true; n++; } });
+  renderLists();
+  $('brStatus').innerHTML='Lisätty <b>'+n+'</b> asemaa.';
+}
 $('brGo').addEventListener('click',brSearch);
+$('brTest').addEventListener('click',brTestAll);
+$('brAddOk').addEventListener('click',brAddGreens);
 $('brQ').addEventListener('keydown',e=>{ if(e.key==='Enter') brSearch(); });
 
 /* ==========================  TRANSPORT  ========================== */
@@ -1009,6 +1059,10 @@ function setFormat(f){
   $('fmt916').classList.toggle('on',f==='9:16'); $('fmt169').classList.toggle('on',f==='16:9');
   fitStage();
 }
+$('anOn').addEventListener('click',()=>{ S.anShow=true;
+  $('anOn').classList.add('on'); $('anOff').classList.remove('on'); });
+$('anOff').addEventListener('click',()=>{ S.anShow=false;
+  $('anOff').classList.add('on'); $('anOn').classList.remove('on'); });
 $('fmt916').addEventListener('click',()=>setFormat('9:16'));
 $('fmt169').addEventListener('click',()=>setFormat('16:9'));
 function fitStage(){
@@ -1637,25 +1691,138 @@ function unitTuner(x,y,w,h){
 }
 
 /* ==========================  RACK  ========================== */
+/* Kolmannesoktaavikaistat, kuten oikeassa analysaattorissa. */
+const ISO=[20,25,31.5,40,50,63,80,100,125,160,200,250,315,400,500,630,800,1000,
+           1250,1600,2000,2500,3150,4000,5000,6300,8000,10000,12500,16000,20000];
+function isoLabel(f){
+  if (f>=1000){ const k=f/1000; return (k%1?k.toFixed(2).replace(/0$/,''):k)+'K'; }
+  return (f%1?f.toFixed(1):String(f));
+}
+/* SA-131 — ohut spektrianalysaattori EQ:n yläpuolelle.
+   Väri kulkee taajuuden mukaan, huiput jäävät hetkeksi näkyviin. */
+function unitAnalyzer(x,y,w,h){
+  face(x,y,w,h);
+  // vasen reuna: virtakytkin ja nimikilpi
+  const sw=w*.022, sh=h*.30;
+  rr(ctx,x+w*.028,y+h*.22,sw,sh,2); ctx.fillStyle='#2a2722'; ctx.fill();
+  rr(ctx,x+w*.030,y+h*.23,sw*.84,sh*.44,1);
+  ctx.fillStyle='#e9e7e0'; ctx.fill();
+  ctx.textAlign='left';
+  ctx.fillStyle='rgba(55,50,44,.8)';
+  ctx.font='600 '+Math.max(4,h*.075)+'px "Segoe UI",sans-serif';
+  ctx.fillText('POWER', x+w*.020, y+h*.16);
+  ctx.font='700 '+Math.max(5,h*.112)+'px Georgia,"Times New Roman",serif';
+  ctx.fillStyle='rgba(40,37,32,.92)';
+  ctx.fillText('KJWhispers Audio', x+w*.062, y+h*.40);
+  ctx.font='600 '+Math.max(4.5,h*.095)+'px "Segoe UI",sans-serif';
+  ctx.fillStyle='rgba(55,50,44,.85)';
+  ctx.fillText('SA-131', x+w*.062, y+h*.56);
+  ctx.font='500 '+Math.max(3.8,h*.062)+'px "Segoe UI",sans-serif';
+  ctx.fillStyle='rgba(80,74,66,.72)';
+  ctx.fillText('SPECTRUM ANALYZER', x+w*.062, y+h*.70);
+
+  // näyttö
+  const dx=x+w*.250, dw=w*.598, dy=y+h*.09, dh=h*.82;
+  rr(ctx,dx,dy,dw,dh,4); ctx.fillStyle='#07070a'; ctx.fill();
+  ctx.strokeStyle='rgba(0,0,0,.6)'; ctx.lineWidth=2; ctx.stroke();
+
+  const N=ISO.length;
+  if (!S.anPeaks || S.anPeaks.length!==N) S.anPeaks=new Float32Array(N);
+  const vals=new Float32Array(N);
+  if (analyser){
+    analyser.getByteFrequencyData(freqData);
+    const nyq=ac.sampleRate/2, bins=freqData.length;
+    for (let i=0;i<N;i++){
+      const f=ISO[i], lo=f/Math.pow(2,1/6), hi=f*Math.pow(2,1/6);
+      let b0=Math.floor(lo/nyq*bins), b1=Math.max(b0+1,Math.ceil(hi/nyq*bins));
+      let m=0; for(let b=b0;b<b1&&b<bins;b++) if(freqData[b]>m) m=freqData[b];
+      vals[i]=Math.pow(m/255,.78);
+    }
+  }
+  const padX=dw*.012, labH=dh*.17;
+  const area={x:dx+padX, y:dy+dh*.055, w:dw-padX*2-dw*.035, h:dh-labH-dh*.085};
+  const cw=area.w/N, bw=cw*.74;
+  const rows=12, rh=area.h/rows;
+  for (let i=0;i<N;i++){
+    const cx=area.x+i*cw+(cw-bw)/2;
+    const hue=272-(i/(N-1))*272;
+    const lit=Math.round(vals[i]*rows);
+    S.anPeaks[i]=Math.max(vals[i], S.anPeaks[i]-.009);
+    for (let r=0;r<rows;r++){
+      const ry=area.y+area.h-(r+1)*rh;
+      if (r<lit){
+        const l=46+26*(r/rows);
+        ctx.fillStyle='hsl('+hue+',92%,'+l+'%)';
+        if (r===lit-1){
+          ctx.save(); ctx.shadowColor='hsl('+hue+',95%,60%)'; ctx.shadowBlur=rh*2.2;
+          ctx.fillRect(cx,ry+rh*.12,bw,rh*.76); ctx.restore();
+        } else ctx.fillRect(cx,ry+rh*.12,bw,rh*.76);
+      } else {
+        ctx.fillStyle='rgba(120,130,160,.07)';
+        ctx.fillRect(cx,ry+rh*.12,bw,rh*.76);
+      }
+    }
+    if (S.anPeaks[i]>.03){
+      const py=area.y+area.h-Math.min(1,S.anPeaks[i])*area.h;
+      ctx.save(); ctx.shadowColor='rgba(120,190,255,.9)'; ctx.shadowBlur=rh;
+      ctx.fillStyle='#8ccbff';
+      ctx.fillRect(cx,Math.max(area.y,py-rh*.45),bw,rh*.30);
+      ctx.restore();
+    }
+    // taajuusmerkinnät joka toiselle, jotta ne mahtuvat
+    if (i%2===0){
+      ctx.textAlign='center'; ctx.fillStyle='rgba(190,200,220,.5)';
+      ctx.font='500 '+Math.max(3.5,labH*.42)+'px "Segoe UI",sans-serif';
+      ctx.fillText(isoLabel(ISO[i]), cx+bw/2, dy+dh-labH*.30);
+    }
+  }
+  ctx.textAlign='right'; ctx.fillStyle='rgba(190,200,220,.45)';
+  ctx.font='500 '+Math.max(3.5,dh*.075)+'px "Segoe UI",sans-serif';
+  ctx.fillText('LCH', dx+dw-dw*.006, dy+dh*.16);
+  ctx.fillText('RCH', dx+dw-dw*.006, dy+dh*.80);
+  ctx.textAlign='left';
+
+  // oikea reuna: nupit ylhäällä, pienet painikkeet alla
+  const kr=h*.145;
+  ctx.textAlign='center'; ctx.fillStyle='rgba(55,50,44,.78)';
+  ctx.font='600 '+Math.max(3.5,h*.062)+'px "Segoe UI",sans-serif';
+  ctx.fillText('DIMMER', x+w*.898, y+h*.14);
+  ctx.fillText('SENS', x+w*.958, y+h*.14);
+  ctx.textAlign='left';
+  knob(x+w*.898,y+h*.36,kr,-2.1,null,null);
+  knob(x+w*.958,y+h*.36,kr,-1.3,null,null);
+  for (let i=0;i<4;i++){
+    const bx=x+w*.872+i*w*.032, by=y+h*.66, bw2=w*.024, bh2=h*.20;
+    rr(ctx,bx,by,bw2,bh2,2);
+    const g=ctx.createLinearGradient(0,by,0,by+bh2);
+    g.addColorStop(0,'#33302a'); g.addColorStop(1,'#17150f');
+    ctx.fillStyle=g; ctx.fill();
+    ctx.strokeStyle='rgba(0,0,0,.45)'; ctx.lineWidth=1; ctx.stroke();
+  }
+}
 function drawRack(x,y,w,h){
-  const P={cap:.0135,reel:.264,cass:.1855,amp:.1687,eq:.1406,tun:.1912,base:.0191,gap:.0028};
+  const P={cap:.0135,reel:.264,cass:.1855,amp:.1687,an:.108,eq:.1406,tun:.1912,base:.0191,gap:.0028};
+  // Yksiköiden osuudet normalisoidaan, jotta pino täyttää korkeuden
+  // riippumatta siitä onko analysaattori mukana.
+  const units=['reel','cass','amp','an','eq','tun'].filter(u=>u!=='an'||S.anShow);
+  const nGap=units.length+1;
+  const raw=P.cap+P.base+P.gap*nGap+units.reduce((a,u)=>a+P[u],0);
+  const k=1/raw;
+  const H=u=>h*P[u]*k, G=h*P.gap*k;
   // puurunko
   const woodW=w*.052;
   const wg=ctx.createLinearGradient(x,0,x+w,0);
   wg.addColorStop(0,'#3a2412'); wg.addColorStop(.5,'#4e2f17'); wg.addColorStop(1,'#33200f');
   rr(ctx,x-woodW*.35,y-h*.004,w+woodW*.7,h+h*.008,6); ctx.fillStyle=wg; ctx.fill();
   let cy=y;
-  const cap=h*P.cap;
+  const cap=h*P.cap*k;
   const cg=ctx.createLinearGradient(0,cy,0,cy+cap);
   cg.addColorStop(0,'#5c3a1d'); cg.addColorStop(1,'#2e1c0d');
   ctx.fillStyle=cg; ctx.fillRect(x-woodW*.35,cy,w+woodW*.7,cap);
-  cy+=cap+h*P.gap;
-  const hR=h*P.reel;  unitReel(x,cy,w,hR);       cy+=hR+h*P.gap;
-  const hC=h*P.cass;  unitCassette(x,cy,w,hC);   cy+=hC+h*P.gap;
-  const hA=h*P.amp;   unitAmp(x,cy,w,hA);        cy+=hA+h*P.gap;
-  const hE=h*P.eq;    unitEQ(x,cy,w,hE);         cy+=hE+h*P.gap;
-  const hT=h*P.tun;   unitTuner(x,cy,w,hT);      cy+=hT+h*P.gap;
-  const base=h*P.base;
+  cy+=cap+G;
+  const DRAW={reel:unitReel, cass:unitCassette, amp:unitAmp, an:unitAnalyzer, eq:unitEQ, tun:unitTuner};
+  units.forEach(u=>{ const uh=H(u); DRAW[u](x,cy,w,uh); cy+=uh+G; });
+  const base=h*P.base*k;
   const bg=ctx.createLinearGradient(0,cy,0,cy+base);
   bg.addColorStop(0,'#3a2412'); bg.addColorStop(1,'#1d1208');
   ctx.fillStyle=bg; ctx.fillRect(x-woodW*.35,cy,w+woodW*.7,base);
@@ -1789,7 +1956,7 @@ function frame(t){
   S.dialFreq += (S.dialTarget-S.dialFreq)*Math.min(1,dt*3.2);
   drawBackdrop(W,H,p);
   if (p){
-    const rw=W*.90, rh=H*.925, rx=(W-rw)/2, ry=(H-rh)/2;
+    const rw=W*.92, rh=H*.962, rx=(W-rw)/2, ry=(H-rh)/2;
     drawRack(rx,ry,rw,rh);
   } else {
     drawArtPanel({x:290,y:80,w:660,h:660});
