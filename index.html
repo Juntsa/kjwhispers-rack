@@ -151,7 +151,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.5.0 &middot; 27.10.2026</span>
+    <span class="build">build 1.5.2 &middot; 27.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -245,6 +245,8 @@ a.dl:hover{border-color:var(--green)}
           <span id="tapeTxt" style="width:58px;text-align:right;color:var(--amber2);font-size:11px">0,09 %</span>
         </div>
         <label class="chk"><input type="checkbox" id="stopFx" checked> STOP hyydyttää kelat</label>
+        <label class="chk"><input type="checkbox" id="awake" checked> Pidä näyttö päällä soiton aikana</label>
+        <div class="hint" id="awakeInfo">Estää näytön sammumisen, joka katkaisisi äänen.</div>
       </section>
 
       <section id="secView">
@@ -663,8 +665,9 @@ function renderLists(){
   STATIONS.forEach((s,i)=>{
     const d=document.createElement('div');
     d.className='tr'+(S.src==='tuner'&&stIndex===i?' cur':'');
-    const stat = s.st===true?'<span class="st ok">mittarit</span>'
-               : s.st===false?'<span class="st no">vain ääni</span>'
+    const stat = (s.st===true||s.st==='ok')?'<span class="st ok">mittarit</span>'
+               : (s.st===false||s.st==='raw')?'<span class="st no">vain ääni</span>'
+               : s.st==='dead'?'<span class="st no">ei toistu</span>'
                : '<span class="st">?</span>';
     d.innerHTML='<span class="n">'+s.f.toFixed(1)+'</span><span class="t"></span>'+stat+
                 (i>=8?'<span class="x">&times;</span>':'');
@@ -728,7 +731,24 @@ function radioFallback(s, why, wantPlay){
   RAW.src=s.u; RAW.volume=Math.min(1,Math.max(0,volVal)); RAW.load();
   $('radioStatus').innerHTML='<span class="err"><b>'+esc(s.n)+'</b>: '+esc(why)+'.</span><br>'+
     'Asema soi varasoittimella: kuuluu kaiuttimista, mutta EQ, mittarit ja tallennuksen ääniraita eivät saa siitä signaalia.';
-  if (wantPlay){ RAW.play().then(()=>{S.playing=true;}).catch(()=>{}); }
+  // Jos varasoitinkaan ei saa ääntä ulos, siitä kerrotaan — ei jätetä hiljaiseksi.
+  const dead=(txt)=>{
+    s.st='dead'; renderLists();
+    $('radioStatus').innerHTML='<span class="err"><b>'+esc(s.n)+'</b> ei toistu tässä selaimessa'+
+      (txt?' ('+esc(txt)+')':'')+'.</span><br>'+
+      'Yleisin syy on koodekki: Safari ei osaa OGG- eikä Opus-striimejä. Kokeile toista asemaa.';
+  };
+  RAW.addEventListener('error',()=>{
+    const e=RAW.error, map={1:'lataus keskeytetty',2:'verkkovirhe',3:'purkuvirhe',
+      4:'muotoa ei tueta'};
+    dead(e?(map[e.code]||''):'');
+  },{once:true});
+  if (wantPlay){
+    RAW.play().then(()=>{S.playing=true;}).catch(err=>{
+      if (err && err.name==='NotAllowedError') return;   // odottaa kosketusta
+      dead(err?err.name:'');
+    });
+  }
 }
 /* Lataus ei vielä todista, että ääntä tulee graafista läpi.
    Mitataan analyserista todellinen taso ennen kuin asema merkitään vihreäksi. */
@@ -785,10 +805,11 @@ function tune(i, playIt){
 }
 /* Kokeilee salliiko osoite analyysin. Omalla mykällä soittimellaan,
    joten soiva raita ei häiriinny. */
-function testUrl(u, ms){
+function testUrl(u, ms, cors){
   return new Promise(res=>{
     const a=new Audio();
-    a.crossOrigin='anonymous'; a.muted=true; a.preload='metadata';
+    if (cors!==false) a.crossOrigin='anonymous';
+    a.muted=true; a.preload='metadata';
     let done=false;
     const fin=v=>{ if(done)return; done=true;
       try{ a.pause(); a.removeAttribute('src'); a.load(); }catch(e){} res(v); };
@@ -799,7 +820,25 @@ function testUrl(u, ms){
     a.src=u; a.load();
   });
 }
-function testStation(i){ return testUrl(STATIONS[i].u); }
+/* Kolme mahdollista tulosta:
+   'ok'   analyysi sallittu — EQ, mittarit ja tallennus toimivat
+   'raw'  soi, mutta ei kulje ääniketjun läpi
+   'dead' ei toistu lainkaan (koodekki, kuollut osoite tai ohjaus http:hen) */
+async function probeUrl(u, ms){
+  if (await testUrl(u, ms||6000, true)) return 'ok';
+  if (await testUrl(u, ms||6000, false)) return 'raw';
+  return 'dead';
+}
+function testStation(i){ return probeUrl(STATIONS[i].u); }
+/* Osaako tämä selain soittaa tämän koodekin lainkaan. */
+const probeEl=document.createElement('audio');
+function codecPlayable(c){
+  if (!c) return true;
+  if (/OPUS/i.test(c))        return !!probeEl.canPlayType('audio/ogg; codecs="opus"');
+  if (/OGG|VORBIS/i.test(c))  return !!probeEl.canPlayType('audio/ogg; codecs="vorbis"');
+  if (/FLAC/i.test(c))        return !!probeEl.canPlayType('audio/flac');
+  return true;
+}
 async function testAll(){
   $('stAll').disabled=true; $('stTest').disabled=true;
   for (let i=0;i<STATIONS.length;i++){
@@ -807,10 +846,12 @@ async function testAll(){
     STATIONS[i].st = await testStation(i);
     renderLists();
   }
-  const okN=STATIONS.filter(s=>s.st===true).length;
+  const okN=STATIONS.filter(s=>s.st==='ok'||s.st===true).length;
+  const rawN=STATIONS.filter(s=>s.st==='raw'||s.st===false).length;
+  const deadN=STATIONS.filter(s=>s.st==='dead').length;
   $('stAll').disabled=false; $('stTest').disabled=false;
-  $('radioStatus').innerHTML='Testattu: <b>'+okN+'/'+STATIONS.length+'</b> asemaa sallii analyysin.'+
-    (okN===0?'<br><span class="err">Yksikään ei mennyt läpi tiedostosta avattuna — kokeile sivua verkossa.</span>':'');
+  $('radioStatus').innerHTML='Testattu: <b>'+okN+'</b> mittareilla, <b>'+rawN+
+    '</b> vain ääni, <b>'+deadN+'</b> ei toistu.';
 }
 $('stAll').addEventListener('click',testAll);
 $('stAdd').addEventListener('click',()=>{
@@ -891,21 +932,26 @@ function renderBr(){
   const box=$('brList'); box.innerHTML='';
   brHits.forEach((s,i)=>{
     const d=document.createElement('div'); d.className='tr';
-    const st = s.ok===true?'<span class="st ok">mittarit</span>'
-             : s.ok===false?'<span class="st no">vain ääni</span>'
-             : (s.ok==='…'?'<span class="st">testataan</span>':'');
+    const bad = !codecPlayable(s.codec);
+    const st = s.ok==='ok'?'<span class="st ok">mittarit</span>'
+             : s.ok==='raw'?'<span class="st no">vain ääni</span>'
+             : s.ok==='dead'?'<span class="st no">ei toistu</span>'
+             : s.ok==='…'?'<span class="st">testataan</span>'
+             : bad?'<span class="st no">koodekki</span>':'';
     d.innerHTML='<span class="n">+</span><span class="t"></span>'+st+'<span class="d"></span>';
     d.querySelector('.t').textContent=s.n;
     d.querySelector('.d').textContent=[s.codec,s.bps?s.bps+'k':''].filter(Boolean).join(' ');
+    if (bad) d.style.opacity='.55';
     d.addEventListener('click',async ()=>{
       const idx=addStation(s.n,s.u);
       if (idx<0){ $('brStatus').innerHTML='<span class="err">Kelvoton osoite.</span>'; return; }
       $('brStatus').innerHTML='Lisätty: <b>'+esc(s.n)+'</b> — testataan…';
-      STATIONS[idx].st = await testStation(idx);
-      renderLists();
-      $('brStatus').innerHTML='<b>'+esc(s.n)+'</b> — '+(STATIONS[idx].st
-        ? 'lataus onnistui, merkitty mittareille. Varmistus tulee kun asema soi.'
-        : '<span class="err">ei salli analyysiä: soi varasoittimella.</span>');
+      const r=await testStation(idx);
+      STATIONS[idx].st=r; s.ok=r; renderLists(); renderBr();
+      $('brStatus').innerHTML='<b>'+esc(s.n)+'</b> — '+(
+        r==='ok' ? 'lataus onnistui, merkitty mittareille. Varmistus tulee kun asema soi.'
+      : r==='raw'? '<span class="err">ei salli analyysiä: soi varasoittimella ilman mittareita.</span>'
+      : '<span class="err">ei toistu tässä selaimessa'+(bad?' — koodekki '+esc(s.codec):'')+'.</span>');
     });
     box.appendChild(d);
   });
@@ -920,24 +966,26 @@ async function brTestAll(){
     while(q.length){
       const s=q.shift();
       s.ok='…'; renderBr();
-      s.ok=await testUrl(s.u, 6000);
+      s.ok=await probeUrl(s.u, 6000);
       done++;
       $('brStatus').textContent='Testattu '+done+'/'+brHits.length+'…';
       renderBr();
     }
   };
   await Promise.all([worker(),worker(),worker()]);
-  const greens=brHits.filter(s=>s.ok===true).length;
+  const greens=brHits.filter(s=>s.ok==='ok').length;
+  const raws=brHits.filter(s=>s.ok==='raw').length;
+  const deads=brHits.filter(s=>s.ok==='dead').length;
   $('brTest').disabled=false; $('brAddOk').disabled=false;
-  $('brStatus').innerHTML='Valmis: <b>'+greens+'/'+brHits.length+'</b> asemaa sallii analyysin.'+
-    (greens?' Lisää ne napista tai napauttamalla yksitellen.':
-     ' Punaisetkin soivat, mutta ilman mittareita.');
+  $('brStatus').innerHTML='Valmis: <b>'+greens+'</b> mittareilla, <b>'+raws+
+    '</b> vain ääni, <b>'+deads+'</b> ei toistu.'+
+    (greens?' Lisää vihreät napista.':'');
 }
 function brAddGreens(){
-  const g=brHits.filter(s=>s.ok===true);
+  const g=brHits.filter(s=>s.ok==='ok');
   if (!g.length){ $('brStatus').textContent='Ei testattuja vihreitä. Paina ensin Testaa tulokset.'; return; }
   let n=0;
-  g.forEach(s=>{ const i=addStation(s.n,s.u); if(i>=0){ STATIONS[i].st=true; n++; } });
+  g.forEach(s=>{ const i=addStation(s.n,s.u); if(i>=0){ STATIONS[i].st='ok'; n++; } });
   renderLists();
   $('brStatus').innerHTML='Lisätty <b>'+n+'</b> asemaa.';
 }
@@ -956,7 +1004,7 @@ async function play(){
     RAW.volume=Math.min(1,Math.max(0,volVal));
     try{ await RAW.play(); }catch(e){ setStatus('Toisto ei käynnistynyt: '+e.message,true); return; }
     bgv.play().catch(()=>{});
-    S.playing=true;
+    S.playing=true; keepAwake(true);
     if (BUILD.rec && $('autoRec').checked && !S.recording) startRec();
     return;
   }
@@ -968,15 +1016,17 @@ async function play(){
   if (off>0 && S.src!=='tuner' && el.currentTime<0.25){ try{ el.currentTime=off; }catch(e){} }
   try{ await el.play(); }catch(e){ setStatus('Toisto ei käynnistynyt: '+e.message,true); return; }
   bgv.play().catch(()=>{});
-  S.playing=true; applyTape();
+  S.playing=true; applyTape(); keepAwake(true);
   if (BUILD.rec && $('autoRec').checked && !S.recording) startRec();
   mediaSession();
 }
 function pause(){
+  keepAwake(false);
   if (S.src==='tuner' && S.radioRaw){ RAW.pause(); S.playing=false; return; }
   cur().pause(); S.playing=false; applyTape();
 }
 function stop(){
+  keepAwake(false);
   if (S.src==='tuner' && S.radioRaw){ RAW.pause(); S.playing=false; if(S.recording) stopRec(); return; }
   const el=cur();
   const done=()=>{ el.pause(); if(S.src!=='tuner') el.currentTime=0; el.playbackRate=1;
@@ -2096,6 +2146,34 @@ function syncBar(){
   $('mPlay').innerHTML = p?'&#10073;&#10073;':'&#9654;';
   $('mPlay').setAttribute('aria-label', p?'Tauko':'Toista');
 }
+
+/* ==========  NÄYTTÖ PÄÄLLÄ JA PALUU ETUALALLE  ==========
+   iOS pysäyttää AudioContextin kun sivu menee taustalle, joten
+   näytön sammuminen katkaisee äänen. Wake Lock estää sammumisen
+   niin kauan kuin sovellus on edessä. */
+let wakeLock=null;
+async function keepAwake(on){
+  try{
+    if (on){
+      if (!('wakeLock' in navigator) || wakeLock || !$('awake').checked) return;
+      wakeLock=await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release',()=>{ wakeLock=null; });
+    } else if (wakeLock){ const w=wakeLock; wakeLock=null; await w.release(); }
+  }catch(e){ wakeLock=null; }
+}
+$('awake').addEventListener('change',()=>{
+  if ($('awake').checked){ if (S.playing) keepAwake(true); } else keepAwake(false);
+});
+if (!('wakeLock' in navigator)){
+  $('awakeInfo').innerHTML='<span class="err">Tämä selain ei tue näytön lukitusta hereille. '+
+    'Kokeile sovellusta kotivalikosta avattuna.</span>';
+}
+document.addEventListener('visibilitychange',()=>{
+  if (document.visibilityState!=='visible'){ keepAwake(false); return; }
+  // Takaisin etualalle: herätetään ääniketju ja näyttölukko.
+  if (ac && ac.state==='suspended') ac.resume().catch(()=>{});
+  if (S.playing) keepAwake(true);
+});
 
 /* ==========  LUKITUSNÄYTTÖ JA KUULOKKEIDEN OHJAUS  ========== */
 function mediaSession(){
