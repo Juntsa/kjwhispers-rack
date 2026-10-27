@@ -105,10 +105,14 @@ a.dl:hover{border-color:var(--green)}
   .panel h2{position:sticky;top:0;background:#141009;padding-top:10px;z-index:2}
   /* kahva */
   .sheetbar{
-    display:block;position:sticky;top:0;z-index:3;padding:8px 0 4px;background:#141009;
-    text-align:center;cursor:pointer;
+    display:block;position:sticky;top:0;z-index:3;padding:10px 0 6px;background:#141009;
+    text-align:center;cursor:pointer;touch-action:none;
   }
-  .sheetbar i{display:inline-block;width:42px;height:4px;border-radius:3px;background:#4a3a26}
+  .sheetbar i{display:inline-block;width:48px;height:5px;border-radius:3px;background:#6a553a}
+  .sheetbar .sclose{
+    position:absolute;right:0;top:4px;padding:6px 13px;font-size:17px;line-height:1;
+    border-radius:8px;
+  }
 
   .bar{
     display:flex;flex-direction:column;gap:7px;
@@ -147,14 +151,16 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.3.3 &middot; 27.10.2026</span>
+    <span class="build">build 1.4.1 &middot; 27.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
   <main>
     <div class="stage"><canvas id="rack" width="1080" height="1920"></canvas></div>
     <div class="panel">
-      <div class="sheetbar" id="sheetbar"><i></i></div>
+      <div class="sheetbar" id="sheetbar"><i></i>
+        <button class="sclose" id="sheetClose" aria-label="Sulje">&times;</button>
+      </div>
 
       <section id="secSrc">
         <h2>1 &middot; Lähde</h2>
@@ -189,6 +195,13 @@ a.dl:hover{border-color:var(--green)}
       <section id="secRadio">
         <h2>2 &middot; Viritin</h2>
         <div class="lst" id="lstR"></div>
+        <div class="row">
+          <input type="text" id="brQ" placeholder="Hae asemia nimellä">
+          <button id="brGo">Hae</button>
+        </div>
+        <label class="chk"><input type="checkbox" id="brFi" checked> Vain suomalaiset</label>
+        <div class="lst" id="brList"></div>
+        <div class="status" id="brStatus"></div>
         <div class="row"><input type="text" id="stName" placeholder="Aseman nimi"></div>
         <div class="row"><input type="text" id="stUrl" placeholder="https://striimin-osoite"></div>
         <div class="row"><button id="stAdd">Lisää asema</button><button id="stTest">Testaa valittu</button>
@@ -791,13 +804,97 @@ $('stAdd').addEventListener('click',()=>{
   if(!n||!raw){ $('radioStatus').innerHTML='<span class="err">Anna nimi ja osoite.</span>'; return; }
   const u=safeUrl(raw);
   if(!u){ $('radioStatus').innerHTML='<span class="err">Kelvoton osoite. Vain http:// ja https:// kelpaavat.</span>'; return; }
-  const used=STATIONS.map(s=>s.f);
-  let f=88.2; while(used.some(x=>Math.abs(x-f)<1.2) && f<107.8) f+=1.3;
-  STATIONS.push({n,u,f:Math.round(f*10)/10,st:null}); saveStations(); renderLists();
+  addStation(n,u);
   $('stName').value=''; $('stUrl').value='';
   tune(STATIONS.length-1,false);
 });
 $('stTest').addEventListener('click',()=>{ if(stIndex>=0) tune(stIndex,false); });
+
+/* Vapaa paikka asteikolta, jotta uudet asemat eivät mene päällekkäin. */
+function freeFreq(){
+  const used=STATIONS.map(s=>s.f);
+  let f=88.2;
+  while (used.some(x=>Math.abs(x-f)<1.0) && f<107.8) f+=1.1;
+  return Math.round(Math.min(f,107.8)*10)/10;
+}
+function addStation(n,u){
+  const url=safeUrl(u); if(!url) return -1;
+  if (STATIONS.some(s=>s.u===url)) return STATIONS.findIndex(s=>s.u===url);
+  STATIONS.push({n:String(n).slice(0,60), u:url, f:freeFreq(), st:null});
+  saveStations(); renderLists();
+  return STATIONS.length-1;
+}
+
+/* ==========  ASEMAHAKU avoimesta hakemistosta  ==========
+   Hakemiston rajapinta sallii haun selaimesta. Striimien oma
+   CORS-tilanne on eri asia, ja se testataan lisäyksen yhteydessä. */
+const BR_HOSTS=['https://de1.api.radio-browser.info','https://fi1.api.radio-browser.info',
+                'https://nl1.api.radio-browser.info','https://at1.api.radio-browser.info'];
+let brHits=[];
+async function brFetch(path){
+  for (const h of BR_HOSTS){
+    const c=new AbortController();
+    const t=setTimeout(()=>c.abort(), 8000);
+    try{
+      const r=await fetch(h+path,{signal:c.signal,headers:{'Accept':'application/json'}});
+      clearTimeout(t);
+      if (r.ok) return await r.json();
+    }catch(e){ clearTimeout(t); }
+  }
+  return null;
+}
+async function brSearch(){
+  const q=$('brQ').value.trim();
+  const fi=$('brFi').checked;
+  $('brStatus').textContent='Haetaan…';
+  $('brList').innerHTML='';
+  const p='/json/stations/search?limit=80&hidebroken=true&order=votes&reverse=true'+
+          (q?'&name='+encodeURIComponent(q):'')+(fi?'&countrycode=FI':'');
+  const rows=await brFetch(p);
+  if (!rows){
+    $('brStatus').innerHTML='<span class="err">Hakemistoon ei saatu yhteyttä. Kokeile uudelleen tai lisää asema osoitteella.</span>';
+    return;
+  }
+  // https vaaditaan: https-sivulta ei voi soittaa http-striimiä.
+  const all=rows.filter(r=>r && (r.url_resolved||r.url));
+  const ok=[], httpOnly=[];
+  all.forEach(r=>{
+    const u=(r.url_resolved||r.url).trim();
+    if (/^https:/i.test(u)) ok.push({n:r.name?r.name.trim():'(nimetön)', u,
+      codec:(r.codec||'').toUpperCase(), bps:r.bitrate||0, maa:r.country||''});
+    else httpOnly.push(1);
+  });
+  const seen={};
+  brHits=ok.filter(s=>{ if(seen[s.u]) return false; seen[s.u]=1; return true; }).slice(0,40);
+  renderBr();
+  $('brStatus').innerHTML = brHits.length
+    ? esc(brHits.length+' asemaa. Napauta lisätäksesi — sovellus testaa sen heti.')+
+      (httpOnly.length?'<br>'+esc(httpOnly.length+' asemaa jätettiin pois: vain http, ei toimi https-sivulla.'):'')
+    : '<span class="err">Ei https-asemia tällä haulla.'+
+      (httpOnly.length?' ('+httpOnly.length+' asemaa oli vain http.)':'')+'</span>';
+}
+function renderBr(){
+  const box=$('brList'); box.innerHTML='';
+  brHits.forEach((s,i)=>{
+    const d=document.createElement('div'); d.className='tr';
+    d.innerHTML='<span class="n">+</span><span class="t"></span><span class="d"></span>';
+    d.querySelector('.t').textContent=s.n;
+    d.querySelector('.d').textContent=[s.codec,s.bps?s.bps+'k':''].filter(Boolean).join(' ');
+    d.addEventListener('click',async ()=>{
+      const idx=addStation(s.n,s.u);
+      if (idx<0){ $('brStatus').innerHTML='<span class="err">Kelvoton osoite.</span>'; return; }
+      $('brStatus').innerHTML='Lisätty: <b>'+esc(s.n)+'</b> — testataan…';
+      STATIONS[idx].st = await testStation(idx);
+      renderLists();
+      $('brStatus').innerHTML='<b>'+esc(s.n)+'</b> — '+(STATIONS[idx].st
+        ? 'lataus onnistui, merkitty mittareille. Varmistus tulee kun asema soi.'
+        : '<span class="err">ei salli analyysiä: soi varasoittimella.</span>');
+    });
+    box.appendChild(d);
+  });
+}
+$('brGo').addEventListener('click',brSearch);
+$('brQ').addEventListener('keydown',e=>{ if(e.key==='Enter') brSearch(); });
 
 /* ==========================  TRANSPORT  ========================== */
 async function play(){
@@ -1718,6 +1815,8 @@ function pick(p){
   return null;
 }
 cv.addEventListener('pointerdown',e=>{
+  // Paneeli auki: tornin napautus sulkee sen eikä paina laitteen nappeja.
+  if (sheetOpen){ showSheet(''); return; }
   const p=pos(e), h=pick(p); if(!h) return;
   cv.setPointerCapture(e.pointerId);
   if (h.kind==='eq'){ DRAG={h,p0:p}; applyEqDrag(h,p); }
@@ -1798,7 +1897,27 @@ function showSheet(key){
 document.querySelectorAll('.bar .chips button').forEach(b=>{
   b.addEventListener('click',()=>showSheet(b.dataset.sheet));
 });
-$('sheetbar').addEventListener('click',()=>showSheet(''));
+$('sheetbar').addEventListener('click',e=>{ if(!sheetDragged) showSheet(''); });
+$('sheetClose').addEventListener('click',e=>{ e.stopPropagation(); showSheet(''); });
+/* Kahvasta voi myös vetää alaspäin, koska se näyttää vedettävältä. */
+let sheetY=null, sheetDragged=false;
+$('sheetbar').addEventListener('pointerdown',e=>{
+  sheetY=e.clientY; sheetDragged=false;
+  panel.style.transition='none';
+});
+window.addEventListener('pointermove',e=>{
+  if (sheetY===null) return;
+  const dy=Math.max(0,e.clientY-sheetY);
+  if (dy>4) sheetDragged=true;
+  panel.style.transform='translateY('+dy+'px)';
+});
+['pointerup','pointercancel'].forEach(ev=>window.addEventListener(ev,e=>{
+  if (sheetY===null) return;
+  const dy=Math.max(0,(e.clientY||sheetY)-sheetY);
+  panel.style.transition=''; panel.style.transform=''; sheetY=null;
+  if (dy>55) showSheet('');
+  setTimeout(()=>{ sheetDragged=false; },0);
+}));
 $('mPrev').addEventListener('click',prev);
 $('mNext').addEventListener('click',next);
 $('mPlay').addEventListener('click',()=>{ S.playing?pause():play(); });
