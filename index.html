@@ -151,7 +151,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.8.0 &middot; 27.10.2026</span>
+    <span class="build">build 1.8.2 &middot; 27.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -258,7 +258,6 @@ a.dl:hover{border-color:var(--green)}
   <nav class="bar mob" id="bar">
     <div class="chips">
       <button data-sheet="secSrc">Omat biisit</button>
-      <button data-sheet="secRadio">Radio</button>
       <button data-sheet="secAudio secView">Ääni</button>
     </div>
     <div class="tr">
@@ -549,7 +548,6 @@ $('eqPreset').addEventListener('change',e=>{ (PRESETS[e.target.value]||PRESETS.f
 function setVol(v){
   volVal=Math.max(0,Math.min(1.5,v));
   if(masterGain) masterGain.gain.setTargetAtTime(volVal,ac.currentTime,.02);
-  if(S.radioRaw) RAW.volume=Math.min(1,volVal);
   if(S.bgActive) BG.volume=Math.min(1,volVal);
 }
 function setBal(v){ balVal=Math.max(-1,Math.min(1,v)); if(panner) panner.pan.setTargetAtTime(balVal,ac.currentTime,.03); }
@@ -560,6 +558,11 @@ function setTreb(v){ trebVal=Math.max(-10,Math.min(10,v)); if(trebSh) trebSh.gai
 function fmt(s){ if(!isFinite(s)||s<0)s=0; const m=Math.floor(s/60),r=Math.floor(s%60);
   return m+':'+String(r).padStart(2,'0'); }
 function cleanName(n){ return n.replace(/\.[^.]+$/,'').replace(/_+/g,' ').replace(/\s+/g,' ').trim(); }
+/* Lähteiden järjestys yhdessä paikassa: vahvistimen valitsin, canvaksen
+   kierto ja nuolinäppäimet käyttävät samaa listaa. Ilman radiota
+   viritintä ei ole, eikä valitsin voi osua olemattomaan soittimeen. */
+function SOURCES(){ return BUILD.radio?['reel','A','B','tuner']:['reel','A','B']; }
+function SOURCE_NAMES(){ return BUILD.radio?['REEL','TAPE A','TAPE B','TUNER']:['REEL','TAPE A','TAPE B']; }
 function cur(){ return EL[S.src]; }
 function curItem(){ const l=LIST[S.src]; return l && IDX[S.src]>=0 ? l[IDX[S.src]] : null; }
 function curTitle(){
@@ -674,15 +677,6 @@ async function play(){
   if (S.bgActive){ BG.play().then(()=>{S.playing=true;}).catch(()=>{}); return; }
   initAudio();
   if (ac && ac.state==='suspended'){ try{ await ac.resume(); }catch(e){} }
-  if (S.src==='tuner' && S.radioRaw){
-    RAW.volume=Math.min(1,Math.max(0,volVal));
-    try{ await RAW.play(); }catch(e){ setStatus('Toisto ei käynnistynyt: '+e.message,true); return; }
-    bgv.play().catch(()=>{});
-    S.playing=true; keepAwake(true);
-    if (BUILD.rec && $('autoRec').checked && !S.recording) startRec();
-    return;
-  }
-  RAW.pause();
   const el=cur();
   if (S.src!=='tuner' && !el.src && LIST[S.src].length) load(S.src,0,false);
   el.playbackRate=1;
@@ -697,13 +691,11 @@ async function play(){
 function pause(){
   keepAwake(false);
   if (S.bgActive){ BG.pause(); S.playing=false; return; }
-  if (S.src==='tuner' && S.radioRaw){ RAW.pause(); S.playing=false; return; }
   cur().pause(); S.playing=false; applyTape();
 }
 function stop(){
   keepAwake(false);
   if (S.bgActive){ BG.pause(); S.bgActive=false; S.playing=false; return; }
-  if (S.src==='tuner' && S.radioRaw){ RAW.pause(); S.playing=false; if(S.recording) stopRec(); return; }
   const el=cur();
   const done=()=>{ el.pause(); if(S.src!=='tuner') el.currentTime=0; el.playbackRate=1;
     S.playing=false; S.spooling=false; applyTape(); if(S.recording) stopRec(); };
@@ -767,7 +759,9 @@ function startRec(){}
 function stopRec(){}
 function recLeft(){ return 0; }
 function setStatus(m,err){
-  const el=$('radioStatus'); if(!el) return;
+  // Soitinversiossa ei ole tallennus- eikä viritinriviä, joten viesti
+  // ohjataan ensimmäiseen olemassa olevaan tilakenttään.
+  const el=$('recStatus')||$('radioStatus')||$('dbInfo'); if(!el) return;
   el.innerHTML = err?'<span class="err">'+esc(m)+'</span>':esc(m);
 }
 
@@ -1256,12 +1250,12 @@ function unitAmp(x,y,w,h){
   toggleSw(x+w*.405,ky-h*.055,w*.016,h*.11,false,'TONE','OFF');
   // oikea puoli
   knob(x+w*.680,ky,kr,-Math.PI*1.25+(balVal+1)/2*Math.PI*1.5,'BALANCE','bal');
-  const srcs=['reel','A','B','tuner'], names=['REEL','TAPE A','TAPE B','TUNER'];
-  const si=srcs.indexOf(S.src);
-  knob(x+w*.830,ky,kr*1.1,-Math.PI*1.22+(si/3)*Math.PI*1.44,'INPUT SELECTOR','input');
+  const srcs=SOURCES(), names=SOURCE_NAMES();
+  const si=Math.max(0,srcs.indexOf(S.src));
+  knob(x+w*.830,ky,kr*1.1,-Math.PI*1.22+(si/(srcs.length-1))*Math.PI*1.44,'INPUT SELECTOR','input');
   ctx.textAlign='center'; ctx.fillStyle='rgba(150,70,10,.95)';
   ctx.font='700 '+Math.max(6,h*.05)+'px "Segoe UI",sans-serif';
-  ctx.fillText(names[si<0?0:si],x+w*.830,ky-kr*1.55);
+  ctx.fillText(names[si],x+w*.830,ky-kr*1.55);
   ctx.textAlign='left';
   // alarivi kytkimet
   const sy=y+h*.80;
@@ -1757,7 +1751,8 @@ cv.addEventListener('pointerdown',e=>{
   else if (h.kind==='vol'||h.kind==='bass'||h.kind==='treb'||h.kind==='bal'){ DRAG={h,p0:p,v0:readVal(h.kind)}; }
   else if (h.kind==='tuning'){ DRAG={h,p0:p,v0:S.dialTarget}; }
   else if (h.kind==='src'){ selectSource(h.data); }
-  else if (h.kind==='input'){ const o=['reel','A','B','tuner']; selectSource(o[(o.indexOf(S.src)+1)%4]); }
+  else if (h.kind==='input'){ const o=SOURCES();
+    selectSource(o[(Math.max(0,o.indexOf(S.src))+1)%o.length]); }
   else if (h.kind==='scopeMode'){ S.scope.mode = S.scope.mode==='xy'?'yt':'xy'; }
   else if (h.kind==='scopeGain'||h.kind==='scopeTime'){
     DRAG={h,p0:p,v0:(h.kind==='scopeGain'?S.scope.gain:S.scope.time)};
@@ -1883,7 +1878,6 @@ if (!('wakeLock' in navigator)){
 function bgItem(){ const l=LIST[S.src]; return l?l[IDX[S.src]]:null; }
 function toBackground(){
   if (!$('bgPlay').checked || !S.playing || S.bgActive) return;
-  if (S.src==='tuner' && S.radioRaw) return;      // jo ohitusreitillä
   const el=cur(), src=el.currentSrc||el.src;
   if (!src) return;
   const live=(S.src==='tuner'), t=el.currentTime||0;
@@ -1935,13 +1929,17 @@ document.addEventListener('visibilitychange',()=>{
 window.addEventListener('pagehide',toBackground);
 
 /* ==========  LUKITUSNÄYTTÖ JA KUULOKKEIDEN OHJAUS  ========== */
+function albumName(){
+  const a=$('album').value.trim(); if (a) return a;
+  return 'KJWhispers Audio';
+}
 function mediaSession(){
   if (!('mediaSession' in navigator)) return;
   try{
     navigator.mediaSession.metadata = new MediaMetadata({
       title: curTitle(),
       artist: $('artist').value.trim()||'KJWhispers',
-      album: $('album').value.trim()|| (S.src==='tuner'?'Nettiradio':'KJWhispers Audio'),
+      album: albumName(),
       artwork:[{src:ASSET_ROSE, sizes:'256x256', type:'image/jpeg'}]
     });
     const set=(k,fn)=>{ try{ navigator.mediaSession.setActionHandler(k,fn); }catch(e){} };
