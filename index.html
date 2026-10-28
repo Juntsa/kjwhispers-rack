@@ -185,7 +185,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.11.0 &middot; 28.10.2026</span>
+    <span class="build">build 1.12.0 &middot; 28.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -375,7 +375,8 @@ const S={
   format:'9:16', bgMode:'quill', src:'A', target:'A',
   playing:false, recording:false, spooling:false,
   bgImage:null, bgVideoCustom:null,
-  reelAng:0, cassAng:0, last:0, peaks:null,
+  reelL:0, reelR:0, cassL:0, cassR:0, spoolT:0, spoolDir:1,
+  last:0, peaks:null,
   vu:{l:0,r:0,lp:0,rp:0}, wowVis:0,
   dialFreq:98.5, dialTarget:98.5, tuned:false, radioRaw:false, verifyId:0,
   anPeaks:null, bgActive:false,
@@ -441,6 +442,12 @@ async function dbInfo(note){
       const e=await navigator.storage.estimate();
       if (e && e.usage){ const mb=e.usage/1048576;
         extra=' · '+(mb<10?mb.toFixed(1):mb.toFixed(0))+' MB käytössä'; }
+      if (e && e.quota){
+        const vapaa=Math.max(0,(e.quota-(e.usage||0))/1048576);
+        const kpl=n?Math.min(20,Math.max(2,(e.usage/1048576)/n)):5;
+        extra+=' · tilaa '+(vapaa>1024?(vapaa/1024).toFixed(1)+' GB':Math.round(vapaa)+' MB')+
+               ' eli n. '+Math.round(vapaa/kpl)+' biisiä lisää';
+      }
     }
   }catch(e){}
   const base = n ? esc(n+' biisiä tallessa'+extra) : '';
@@ -797,6 +804,7 @@ function stop(){
 /* force=true kun siirrytään biisin loputtua: silloin soittotila on juuri
    nollattu, mutta toiston pitää jatkua seuraavasta raidasta. */
 function next(force){
+  spoolBurst(1);
   if (S.bgActive){
     const l0=LIST[S.src];
     if (IDX[S.src]<l0.length-1) bgLoadIndex(S.src,IDX[S.src]+1);
@@ -808,6 +816,7 @@ function next(force){
   else if ($('loopOn').checked && l.length) load(S.src,0,go);
 }
 function prev(){
+  spoolBurst(-1);
   if (S.bgActive){
     if (BG.currentTime>3){ try{ BG.currentTime=0; }catch(e){} return; }
     if (IDX[S.src]>0) bgLoadIndex(S.src,IDX[S.src]-1);
@@ -1017,10 +1026,29 @@ function spin(dt){
      musiikki tuli kasetilta, jolloin kelanauhuri näytti soittavan
      nauhaa jota siinä ei ollut — nauha ei siirtynyt kelalta toiselle,
      koska kelassa ei ollut raitaa. */
-  const kay = S.playing || S.spooling;
-  if (kay && S.src==='reel') S.reelAng += dt*2.1*rate*(1+S.wowVis);
-  if (kay && (S.src==='A'||S.src==='B')) S.cassAng += dt*2.9*rate*(1+S.wowVis);
+  /* Kumpikin kela integroi oman kulmansa omalla nopeudellaan. Ennen
+     kulma kerrottiin säteellä, joka pienenee soiton edetessä: silloin
+     kulma saattoi kulkea taaksepäin pelkästään siksi että kerroin
+     muuttui, ja raidan vaihtuessa molemmat hyppäsivät eri suuntiin.
+     Nyt molemmat pyörivät aina samaan suuntaan, pienempi nopeammin. */
+  let mul=1, sgn=1;
+  if (S.spoolT>0){ S.spoolT=Math.max(0,S.spoolT-dt); mul=3.2; sgn=S.spoolDir; }
+  const kay = S.playing || S.spooling || S.spoolT>0;
+  const w=(1+S.wowVis)*rate*mul*sgn;
+  if (kay && S.src==='reel'){
+    const pr=progOf('reel'), base=dt*1.05*w;
+    S.reelL += base/(1-0.60*pr);
+    S.reelR += base/(0.40+0.60*pr);
+  }
+  if (kay && (S.src==='A'||S.src==='B')){
+    const pr=progOf(S.src), base=dt*2.6*w;
+    S.cassL += base/(1-0.55*pr);
+    S.cassR += base/(0.45+0.55*pr);
+  }
 }
+/* Kelausisku: REW ja FF pyöräyttävät keloja hetken omaan suuntaansa,
+   jotta napin painallus näkyy myös silloin kun raita vaihtuu heti. */
+function spoolBurst(dir){ S.spoolDir=dir; S.spoolT=0.55; }
 function progOf(k){
   const el=EL[k];
   return (el && el.duration && isFinite(el.duration)) ? el.currentTime/el.duration : 0;
@@ -1040,8 +1068,8 @@ function unitReel(x,y,w,h){
   ctx.strokeStyle='#2a211c'; ctx.lineWidth=Math.max(2,R*.035);
   ctx.beginPath(); ctx.moveTo(lcx,cy+rL); ctx.lineTo(lcx+R*.62,hy);
   ctx.lineTo(rcx-R*.62,hy); ctx.lineTo(rcx,cy+rR); ctx.stroke();
-  bigReel(lcx,cy,R,rL,S.reelAng*(R/Math.max(rL,1))*.5,true);
-  bigReel(rcx,cy,R,rR,S.reelAng*(R/Math.max(rR,1))*.5,false);
+  bigReel(lcx,cy,R,rL,S.reelL,true);
+  bigReel(rcx,cy,R,rR,S.reelR,false);
   // VU-mittarit keskellä
   drawNeedlePair(x+w*.385,y+h*.215,w*.23,h*.15);
   // kytkimet
@@ -1267,9 +1295,8 @@ function drawCassetteBay(x,y,w,h,k){
     const prog=progOf(k), rMax=ch2*.17, rMin=rMax*.45;
     const ry=cy2+ch2*.70, l1=cx2+cw2*.28, r1=cx2+cw2*.72;
     const rl=rMax-(rMax-rMin)*prog, rrad=rMin+(rMax-rMin)*prog;
-    const ang=active?S.cassAng:0;
-    smallReel(l1,ry,rl,rMax,ang*(rMax/Math.max(rl,1)));
-    smallReel(r1,ry,rrad,rMax,ang*(rMax/Math.max(rrad,1)));
+    smallReel(l1,ry,rl,rMax,active?S.cassL:0);
+    smallReel(r1,ry,rrad,rMax,active?S.cassR:0);
     ctx.strokeStyle='#1d1510'; ctx.lineWidth=Math.max(1.2,ch2*.02);
     ctx.beginPath(); ctx.moveTo(l1,ry+rl); ctx.lineTo(r1,ry+rrad); ctx.stroke();
     // ikkunan hehku
