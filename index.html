@@ -151,7 +151,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.9.3 &middot; 28.10.2026</span>
+    <span class="build">build 1.9.4 &middot; 28.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -548,7 +548,7 @@ $('eqPreset').addEventListener('change',e=>{ (PRESETS[e.target.value]||PRESETS.f
 function setVol(v){
   volVal=Math.max(0,Math.min(1.5,v));
   if(masterGain) masterGain.gain.setTargetAtTime(volVal,ac.currentTime,.02);
-  if(S.bgActive) BG.volume=Math.min(1,volVal);   // iOS ohittaa, muut noudattavat
+  if(S.bgActive) silence(BG,false);
   else if(!BG.paused) silence(BG,true);
 }
 function setBal(v){ balVal=Math.max(-1,Math.min(1,v)); if(panner) panner.pan.setTargetAtTime(balVal,ac.currentTime,.03); }
@@ -1717,6 +1717,11 @@ function frame(t){
   syncBar();
   // Vahti: etualalla varjosoitin on aina äänetön, taustalla se on ainoa ääni.
   if (!S.bgActive && !BG.paused && !BG.muted) silence(BG,true);
+  // Vahti: pysäytetty ääniketju jättää soittimen äänettömäksi kelojen
+  // pyöriessä. Yritetään herättää noin sekunnin välein.
+  if (S.playing && !S.bgActive && ac && ac.state==='suspended' && t-acTry>1200){
+    acTry=t; ac.resume().catch(()=>{});
+  }
   HOT=[];
   const W=cv.width,H=cv.height, p=S.format==='9:16';
   updateVU(); spin(dt);
@@ -1890,6 +1895,18 @@ function silence(el,on){
   try{ el.muted=!!on; }catch(e){}
   try{ el.volume = on?0:Math.min(1,Math.max(0,volVal)); }catch(e){}
 }
+/* Ääniketju on herätettävä ENNEN toistoa. iOS pysäyttää AudioContextin
+   kun sivu menee taustalle, ja pysäytettyyn ketjuun kytketty elementti ei
+   edisty lainkaan: play() onnistuu, mutta kelat seisovat eikä ääntä tule.
+   Herätys voi myös epäonnistua ilman kosketusta, joten se yritetään
+   uudelleen joka kosketuksella. */
+let pendingHandoff=false, acTry=0;
+function resumeAudio(){
+  initAudio();
+  if (!ac) return Promise.resolve(true);
+  if (ac.state==='running') return Promise.resolve(true);
+  return ac.resume().then(()=>ac.state==='running').catch(()=>false);
+}
 /* Varjosoitin. iOS ei anna KÄYNNISTÄÄ toistoa sillä hetkellä kun sivu
    piilotetaan, mutta jo soiva elementti saa jatkaa. Siksi varasoitin
    pannaan soimaan äänettömänä heti playn kanssa, ja lukitushetkellä
@@ -1948,23 +1965,51 @@ function fromBackground(){
     const it=LIST[S.src] && LIST[S.src][IDX[S.src]];
     if (it && el.src!==it.url){ try{ el.src=it.url; el.load(); }catch(e){} }
   }
+  /* Paluu varjoon. Tätä tarvitaan kahdessa tapauksessa: selain estää
+     toiston, tai toisto "onnistuu" mutta ei edisty, koska ääniketju on
+     yhä pysäytetty. Jälkimmäinen on se, joka jättää laitteen hiljaiseksi
+     kelojen pyöriessä, eikä play() kerro siitä mitään. */
+  const backToShadow=(why)=>{
+    S.bgActive=true; pendingHandoff=true;
+    silence(BG,false);
+    try{ el.pause(); }catch(e){}
+    if (BG.paused) BG.play().catch(()=>{});
+    setStatus('Ääniketju ei herännyt ('+why+'). Musiikki jatkuu taustasoittimella — '+
+      'kosketa ruutua niin EQ ja mittarit palaavat.',true);
+  };
+  const verify=()=>{
+    const t0=el.currentTime;
+    setTimeout(()=>{
+      if (S.bgActive) return;                       // tila ehti vaihtua
+      const running=!ac || ac.state==='running';
+      const edistyy=!el.paused && el.currentTime>t0+0.02;
+      if (running && edistyy){
+        pendingHandoff=false;
+        // Varjo uudelleen valmiiksi: seuraava lukitus tarvitsee jo soivan
+        // elementin, koska iOS ei anna käynnistää toistoa lukitushetkellä.
+        startShadow();
+        return;
+      }
+      backToShadow(running?'toisto ei edisty':'ketju pysäytetty');
+    },420);
+  };
   // Raita on voinut vaihtua taskussa, jolloin elementti ei ole vielä valmis.
   const go=()=>{
     if (!live){ try{ el.currentTime=t; }catch(e){} }
-    el.play().then(()=>{ S.playing=true; }).catch(()=>{
-      // Ketju ei lähtenyt: palataan varjoon, ettei jäädä hiljaisuuteen.
-      S.bgActive=true; silence(BG,false);
-    });
+    el.play().then(()=>{ S.playing=true; verify(); })
+      .catch(()=>backToShadow('selain esti toiston'));
   };
-  if (el.readyState>=1) go();
-  else el.addEventListener('loadedmetadata',go,{once:true});
+  resumeAudio().then(()=>{
+    if (el.readyState>=1) go();
+    else el.addEventListener('loadedmetadata',go,{once:true});
+  });
 }
 /* Raidan vaihto taustalla: seuraava tiedosto suoraan taustasoittimeen. */
 function bgLoadIndex(k,i){
   const l=LIST[k]; if(i<0||i>=l.length) return false;
   IDX[k]=i;
   try{ EL[k].src=l[i].url; EL[k].load(); }catch(e){}   // etualaa varten valmiiksi
-  BG.src=l[i].url; BG.volume=Math.min(1,Math.max(0,volVal));
+  BG.src=l[i].url; silence(BG,false);
   BG.load(); BG.play().catch(()=>{});
   renderLists(); mediaSession();
   return true;
@@ -1981,10 +2026,18 @@ BG.addEventListener('error',()=>{ if (S.bgActive){ S.bgActive=false; } });
 
 document.addEventListener('visibilitychange',()=>{
   if (document.visibilityState!=='visible'){ keepAwake(false); toBackground(); return; }
-  // Takaisin etualalle: herätetään ääniketju ja näyttölukko.
-  fromBackground();
-  if (ac && ac.state==='suspended') ac.resume().catch(()=>{});
-  if (S.playing) keepAwake(true);
+  // Takaisin etualalle: ketju herätetään ENSIN, vasta sitten toisto
+  // siirretään takaisin. Toisessa järjestyksessä elementti kytketään
+  // pysäytettyyn ketjuun ja jää seisomaan äänettömänä.
+  resumeAudio().then(()=>{
+    fromBackground();
+    // Jos toisto oli etualalla koko ajan, ketju on silti voinut pysähtyä.
+    if (S.playing && !S.bgActive){
+      const el=cur();
+      if (el.paused) el.play().catch(()=>{});
+    }
+    if (S.playing) keepAwake(true);
+  });
 });
 window.addEventListener('pagehide',toBackground);
 
@@ -2018,11 +2071,15 @@ if (!BUILD.rec){
 /* Äänigraafi rakennetaan heti, ennen kuin mikään ehtii soida. Selain antaa
    sen olla aluksi pysäytetyssä tilassa; ensimmäinen kosketus herättää sen. */
 initAudio();
+/* Herätys joka kosketuksella, ei vain ensimmäisellä: taustalta palatessa
+   iOS voi kieltää herätyksen ilman kosketusta, ja silloin ainoa keino
+   saada ketju takaisin on käyttäjän seuraava kosketus. */
 ['pointerdown','touchend','keydown'].forEach(ev=>{
   document.addEventListener(ev, ()=>{
-    initAudio();
-    if (ac && ac.state==='suspended') ac.resume().catch(()=>{});
-  }, {once:true, passive:true});
+    resumeAudio().then(ok=>{
+      if (ok && pendingHandoff && S.bgActive) fromBackground();
+    });
+  }, {passive:true});
 });
 
 setFormat('9:16');
