@@ -185,7 +185,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.12.0 &middot; 28.10.2026</span>
+    <span class="build">build 1.12.1 &middot; 28.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -1036,12 +1036,12 @@ function spin(dt){
   const kay = S.playing || S.spooling || S.spoolT>0;
   const w=(1+S.wowVis)*rate*mul*sgn;
   if (kay && S.src==='reel'){
-    const pr=progOf('reel'), base=dt*1.05*w;
+    const pr=tapeProg('reel'), base=-dt*1.05*w;   // miinus = vastapäivään
     S.reelL += base/(1-0.60*pr);
     S.reelR += base/(0.40+0.60*pr);
   }
   if (kay && (S.src==='A'||S.src==='B')){
-    const pr=progOf(S.src), base=dt*2.6*w;
+    const pr=tapeProg(S.src), base=-dt*2.6*w;
     S.cassL += base/(1-0.55*pr);
     S.cassR += base/(0.45+0.55*pr);
   }
@@ -1053,6 +1053,23 @@ function progOf(k){
   const el=EL[k];
   return (el && el.duration && isFinite(el.duration)) ? el.currentTime/el.duration : 0;
 }
+/* Nauhan kulku kelalta toiselle lasketaan koko listan yli, ei raidan.
+   Kelalla on yksi nauha johon koko levy on äänitetty: raidan vaihtuessa
+   nauha jatkaa siitä mihin jäi, eikä hyppää takaisin vasemmalle. */
+function tapeProg(k){
+  const l=LIST[k];
+  if (!l || !l.length) return 0;
+  let tot=0, ennen=0, kaikkiTiedossa=true;
+  for (let i=0;i<l.length;i++){
+    const d=l[i].dur||0;
+    if (!d) kaikkiTiedossa=false;
+    if (i<IDX[k]) ennen+=d;
+    tot+=d;
+  }
+  if (!kaikkiTiedossa || !tot) return progOf(k);   // kestot vielä kesken
+  const el=EL[k], nyt=(el && isFinite(el.currentTime))?el.currentTime:0;
+  return Math.max(0,Math.min(1,(ennen+nyt)/tot));
+}
 
 /* ---- TR-1000 kelanauhuri ---- */
 function unitReel(x,y,w,h){
@@ -1062,7 +1079,7 @@ function unitReel(x,y,w,h){
   const active = S.src==='reel';
   const R=Math.min(h*.245,w*.155), cy=y+h*.46;
   const lcx=x+w*.235, rcx=x+w*.765;
-  const prog=progOf('reel');
+  const prog=tapeProg('reel');
   const rMin=R*.40, rL=R-(R-rMin)*prog, rR=rMin+(R-rMin)*prog;
   const hy=cy+R*.88;
   ctx.strokeStyle='#2a211c'; ctx.lineWidth=Math.max(2,R*.035);
@@ -1292,7 +1309,7 @@ function drawCassetteBay(x,y,w,h,k){
     ctx.fillStyle='rgba(60,46,34,.8)';
     ctx.fillText(clip(($('album').value.trim()||$('artist').value.trim())+' · SIDE '+k,cw2*.82),cx2+cw2*.09,cy2+ch2*.43);
     // kelat
-    const prog=progOf(k), rMax=ch2*.17, rMin=rMax*.45;
+    const prog=tapeProg(k), rMax=ch2*.17, rMin=rMax*.45;
     const ry=cy2+ch2*.70, l1=cx2+cw2*.28, r1=cx2+cw2*.72;
     const rl=rMax-(rMax-rMin)*prog, rrad=rMin+(rMax-rMin)*prog;
     smallReel(l1,ry,rl,rMax,active?S.cassL:0);
