@@ -151,7 +151,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.9.2 &middot; 27.10.2026</span>
+    <span class="build">build 1.9.3 &middot; 28.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -548,8 +548,8 @@ $('eqPreset').addEventListener('change',e=>{ (PRESETS[e.target.value]||PRESETS.f
 function setVol(v){
   volVal=Math.max(0,Math.min(1.5,v));
   if(masterGain) masterGain.gain.setTargetAtTime(volVal,ac.currentTime,.02);
-  if(S.bgActive) BG.volume=Math.min(1,volVal);
-  else if(!BG.paused) BG.volume=0;
+  if(S.bgActive) BG.volume=Math.min(1,volVal);   // iOS ohittaa, muut noudattavat
+  else if(!BG.paused) silence(BG,true);
 }
 function setBal(v){ balVal=Math.max(-1,Math.min(1,v)); if(panner) panner.pan.setTargetAtTime(balVal,ac.currentTime,.03); }
 function setBass(v){ bassVal=Math.max(-10,Math.min(10,v)); if(bassSh) bassSh.gain.setTargetAtTime(bassVal,ac.currentTime,.03); }
@@ -1716,7 +1716,7 @@ function frame(t){
   const dt=Math.min(.05,(t-S.last)/1000||.016); S.last=t;
   syncBar();
   // Vahti: etualalla varjosoitin on aina äänetön, taustalla se on ainoa ääni.
-  if (!S.bgActive && !BG.paused && BG.volume>0) BG.volume=0;
+  if (!S.bgActive && !BG.paused && !BG.muted) silence(BG,true);
   HOT=[];
   const W=cv.width,H=cv.height, p=S.format==='9:16';
   updateVU(); spin(dt);
@@ -1883,6 +1883,13 @@ if (!('wakeLock' in navigator)){
    ääniketjun läpi. EQ ja mittarit ovat silloin pimeinä, mutta musiikki
    jatkuu. Etualalle palatessa toisto palaa ketjuun samasta kohdasta. */
 function bgItem(){ const l=LIST[S.src]; return l?l[IDX[S.src]]:null; }
+/* iOS ei anna sivun säätää äänenvoimakkuutta: elementin volume-arvo
+   jätetään siellä huomiotta, ja vain muted toimii. Siksi vaimennus
+   tehdään aina mutedilla, ja volume asetetaan vain työpöytää varten. */
+function silence(el,on){
+  try{ el.muted=!!on; }catch(e){}
+  try{ el.volume = on?0:Math.min(1,Math.max(0,volVal)); }catch(e){}
+}
 /* Varjosoitin. iOS ei anna KÄYNNISTÄÄ toistoa sillä hetkellä kun sivu
    piilotetaan, mutta jo soiva elementti saa jatkaa. Siksi varasoitin
    pannaan soimaan äänettömänä heti playn kanssa, ja lukitushetkellä
@@ -1892,8 +1899,8 @@ function startShadow(){
   if (S.src==='tuner') return;                 // striimiä ei kannata hakea kahdesti
   const el=cur(), src=el.currentSrc||el.src;
   if (!src) return;
-  if (BG.currentSrc===src && !BG.paused){ BG.volume=0; return; }  // soi jo
-  BG.src=src; BG.volume=0;
+  if (BG.currentSrc===src && !BG.paused){ silence(BG,true); return; }  // soi jo
+  BG.src=src; silence(BG,true);
   const sync=()=>{ try{ BG.currentTime=el.currentTime||0; }catch(e){} };
   BG.addEventListener('loadedmetadata',sync,{once:true});
   BG.load();
@@ -1909,15 +1916,17 @@ function toBackground(){
   if (!BG.paused && BG.currentSrc){
     // Varjosoitin on jo käynnissä: pelkkä äänenvoimakkuus ja vaihto.
     S.bgActive=true;
-    BG.volume=Math.min(1,Math.max(0,volVal));
+    silence(BG,false);
     el.pause();
+    // Jos iOS ehti pysäyttää mykän elementin, yritetään vielä herättää.
+    if (BG.paused) BG.play().catch(()=>{});
     return;
   }
   // Varjoa ei ollut — kokeillaan silti käynnistää. Voi epäonnistua iOS:ssä.
   const src=el.currentSrc||el.src;
   if (!src) return;
   const live=(S.src==='tuner'), t=el.currentTime||0;
-  BG.src=src; BG.volume=Math.min(1,Math.max(0,volVal));
+  BG.src=src; silence(BG,false);
   const seek=()=>{ if(!live){ try{ BG.currentTime=t; }catch(e){} } };
   BG.addEventListener('loadedmetadata',seek,{once:true});
   BG.load();
@@ -1933,7 +1942,7 @@ function fromBackground(){
   S.bgActive=false;
   // Mykistys heti, ei vasta kun ketju vahvistaa lähteneensä: muuten
   // molemmat kuuluvat sen hetken jonka toiston aloitus kestää.
-  BG.volume=0;
+  silence(BG,true);
   // Varmista että ketju on samassa raidassa kuin varjo oli.
   if (!live){
     const it=LIST[S.src] && LIST[S.src][IDX[S.src]];
@@ -1944,7 +1953,7 @@ function fromBackground(){
     if (!live){ try{ el.currentTime=t; }catch(e){} }
     el.play().then(()=>{ S.playing=true; }).catch(()=>{
       // Ketju ei lähtenyt: palataan varjoon, ettei jäädä hiljaisuuteen.
-      S.bgActive=true; BG.volume=Math.min(1,Math.max(0,volVal));
+      S.bgActive=true; silence(BG,false);
     });
   };
   if (el.readyState>=1) go();
