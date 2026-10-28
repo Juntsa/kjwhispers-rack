@@ -82,6 +82,40 @@ a.dl:hover{border-color:var(--green)}
 .mob{display:none}
 .sheetbar{display:none}
 .eqpad{display:none}
+/* Ilmoitus ruudun alareunassa. Puhelimessa paneeli on useimmiten kiinni,
+   joten tilakentän viesti jäisi näkemättä juuri silloin kun se tarvitaan. */
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:24px;z-index:70;
+  max-width:min(520px,92vw);padding:11px 16px;border-radius:12px;
+  background:rgba(28,22,16,.96);border:1px solid #6b5636;color:#f0e3cc;
+  font:500 13px/1.45 "Segoe UI",sans-serif;text-align:center;
+  box-shadow:0 12px 34px rgba(0,0,0,.6);pointer-events:none;
+  opacity:0;transition:opacity .18s ease}
+.toast.on{opacity:1}
+@media (max-width:820px){ .toast{bottom:calc(var(--barH) + 14px)} }
+/* Suuri säädin. Pyöreän nupin napautus avaa ison pystysäätimen, jota voi
+   vetää peukalolla; nupin kiertoveto toimii silti kuten ennen. */
+.knobpad{position:fixed;inset:0;z-index:80;display:flex;align-items:center;
+  justify-content:center;background:rgba(10,7,4,.74);padding:16px}
+.knobpad .kp{width:min(300px,84vw);text-align:center;padding:16px 18px 14px;
+  background:linear-gradient(#2c2721,#19161300);background-color:#1b1814;
+  border:1px solid #4d4133;border-radius:18px;box-shadow:0 24px 60px rgba(0,0,0,.72)}
+.kp-name{font:700 13px/1.2 "Segoe UI",sans-serif;letter-spacing:.18em;color:#e8dcc6}
+.kp-val{font:700 30px/1.1 "Segoe UI",sans-serif;color:#ffd79a;margin:4px 0 12px;
+  font-variant-numeric:tabular-nums}
+.kp-track{position:relative;height:min(44vh,290px);width:86px;margin:0 auto;
+  border-radius:14px;border:1px solid #514639;background:#100e0c;
+  box-shadow:inset 0 2px 10px rgba(0,0,0,.8);overflow:hidden;
+  touch-action:none;cursor:ns-resize}
+.kp-fill{position:absolute;left:0;right:0;bottom:0;
+  background:linear-gradient(#c8902f,#6c4a14);opacity:.55}
+.kp-grip{position:absolute;left:4px;right:4px;height:22px;border-radius:6px;
+  background:linear-gradient(#f4f1e8,#b6b2a8);border:1px solid #6b6459;
+  box-shadow:0 2px 6px rgba(0,0,0,.6);pointer-events:none}
+.kp-grip::after{content:'';position:absolute;left:14px;right:14px;top:10px;
+  height:2px;background:rgba(0,0,0,.35);border-radius:2px}
+.kp-row{display:flex;gap:10px;margin:12px 0 8px}
+.kp-row button{flex:1;height:54px;font-size:26px;line-height:1}
+.kp-hint{font:400 11px/1.4 "Segoe UI",sans-serif;color:#9d9284;margin:0 0 10px}
 @media (max-width:820px){
   :root{--barH:132px}
   header{padding:8px 12px}
@@ -151,7 +185,7 @@ a.dl:hover{border-color:var(--green)}
 <div class="app">
   <header>
     <h1>KJWhispers Audio</h1>
-    <span class="build">build 1.9.4 &middot; 28.10.2026</span>
+    <span class="build">build 1.11.0 &middot; 28.10.2026</span>
     <span class="spacer"></span>
     <span class="build" id="codecInfo">&nbsp;</span>
   </header>
@@ -183,6 +217,7 @@ a.dl:hover{border-color:var(--green)}
              äänitiedostot Files-sovelluksessa. Suodatus tehdään JS:ssä. -->
         <input type="file" id="fileAudio" multiple class="hidden">
         <div class="status" id="dbInfo"></div>
+        <div class="lst" id="lstReel"></div>
         <div class="lst" id="lstA"></div>
         <div class="lst" id="lstB"></div>
         <div class="row"><button id="clearAll">Tyhjennä kaikki</button>
@@ -266,6 +301,25 @@ a.dl:hover{border-color:var(--green)}
       <button id="mNext" aria-label="Seuraava">&#9654;&#9654;</button>
     </div>
   </nav>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<div class="knobpad hidden" id="knobPad" aria-hidden="true">
+  <div class="kp" role="dialog" aria-label="Säädin">
+    <div class="kp-name" id="kpName">SÄÄDIN</div>
+    <div class="kp-val" id="kpVal">—</div>
+    <div class="kp-track" id="kpTrack">
+      <div class="kp-fill" id="kpFill"></div>
+      <div class="kp-grip" id="kpGrip"></div>
+    </div>
+    <div class="kp-row">
+      <button id="kpDown" aria-label="Pienennä">&minus;</button>
+      <button id="kpUp" aria-label="Suurenna">+</button>
+    </div>
+    <p class="kp-hint">Vedä palkkia ylös tai alas. Nuppia voi kiertää myös suoraan tornissa.</p>
+    <button id="kpDone" class="primary">VALMIS</button>
+  </div>
 </div>
 
 <audio id="auReel" crossorigin="anonymous"></audio>
@@ -604,6 +658,10 @@ function addFiles(files, tgt){
     p.src=it.url;
   });
   if (IDX[tgt]<0) load(tgt,0,false);
+  // Biisit menevät sinne mihin Lataa-rivi osoittaa. Jos mikään ei soi,
+  // siirretään soitto samaan laitteeseen, jotta PLAY toistaa juuri ne
+  // kappaleet jotka käyttäjä äsken lisäsi.
+  if (!S.playing && S.src!==tgt) selectSource(tgt);
   renderLists(); dbInfo(note);
 }
 function load(which, i, autoplay){
@@ -613,12 +671,12 @@ function load(which, i, autoplay){
   renderLists();
 }
 function renderLists(){
-  [['A','lstA'],['B','lstB']].forEach(([k,id])=>{
+  [['reel','lstReel','K'],['A','lstA','A'],['B','lstB','B']].forEach(([k,id,code])=>{
     const box=$(id); box.innerHTML='';
     LIST[k].forEach((it,i)=>{
       const d=document.createElement('div');
       d.className='tr'+(S.src===k&&IDX[k]===i?' cur':'');
-      d.innerHTML='<span class="n">'+k+String(i+1).padStart(2,'0')+'</span><span class="t"></span>'+
+      d.innerHTML='<span class="n">'+code+String(i+1).padStart(2,'0')+'</span><span class="t"></span>'+
                   '<span class="d">'+(it.dur?fmt(it.dur):'–:––')+'</span><span class="x">&times;</span>';
       d.querySelector('.t').textContent=it.title;
       d.addEventListener('click',e=>{
@@ -647,12 +705,34 @@ document.querySelectorAll('[data-tgt]').forEach(b=>b.addEventListener('click',()
   S.target=b.dataset.tgt;
   document.querySelectorAll('[data-tgt]').forEach(x=>x.classList.toggle('on',x.dataset.tgt===S.target));
 }));
+/* Laitteiden nimet selkokielellä: tyhjästä dekistä pitää kertoa niin,
+   että käyttäjä tietää mihin biisit menivät. */
+const DECK_NAME={reel:'Kela',A:'Kasetti A',B:'Kasetti B'};
+let toastT=null;
+function toast(m){
+  const el=$('toast'); if(!el) return;
+  el.textContent=m; el.classList.add('on');
+  clearTimeout(toastT); toastT=setTimeout(()=>el.classList.remove('on'),4000);
+}
+function sanoTyhja(k,lisa){
+  const m=DECK_NAME[k]+' on tyhjä'+(lisa||'. Avaa Omat biisit, valitse Lataa-riviltä kohde ja lisää kappaleet.');
+  toast(m); setStatus(m,true);
+}
+function deckEmpty(k){ return k!=='tuner' && !(LIST[k]&&LIST[k].length); }
 function selectSource(k){
   if (S.src===k) return;
   Object.keys(EL).forEach(x=>{ if(x!==k) EL[x].pause(); });
   if (k!=='tuner') RAW.pause();
+  const soi=S.playing;
   S.src=k; syncSrcButtons(); renderLists(); applyTape();
-  if (S.playing) play();
+  if (deckEmpty(k)){
+    // Tyhjään dekkiin vaihtaminen ei saa jättää soitinta tilaan, jossa
+    // se luulee soittavansa eikä PLAY tee mitään.
+    S.playing=false; stopShadow(); applyTape();
+    sanoTyhja(k);
+    return;
+  }
+  if (soi) play();
 }
 $('drop').addEventListener('click',()=>$('fileAudio').click());
 $('fileAudio').addEventListener('change',e=>addFiles(e.target.files,S.target));
@@ -679,6 +759,10 @@ async function play(){
   initAudio();
   if (ac && ac.state==='suspended'){ try{ await ac.resume(); }catch(e){} }
   const el=cur();
+  if (deckEmpty(S.src)){
+    sanoTyhja(S.src);
+    return;
+  }
   if (S.src!=='tuner' && !el.src && LIST[S.src].length) load(S.src,0,false);
   el.playbackRate=1;
   const off=startOffset();
@@ -929,12 +1013,13 @@ function spin(dt){
   const a=tapeAmount(), t=performance.now()/1000;
   S.wowVis = a ? (Math.sin(t*.72*6.283)*.055+Math.sin(t*9.3*6.283)*.012)*a : 0;
   const el=cur(), rate=(el&&el.playbackRate)||1;
-  if ((S.playing||S.spooling) && S.src!=='tuner'){
-    S.reelAng += dt*2.1*rate*(1+S.wowVis);
-    S.cassAng += dt*2.9*rate*(1+S.wowVis);
-  } else if (S.playing && S.src==='tuner'){
-    S.reelAng += dt*0.0; S.cassAng += dt*0.0;
-  }
+  /* Vain soiva laite liikkuu. Ennen kelat pyörivät myös silloin kun
+     musiikki tuli kasetilta, jolloin kelanauhuri näytti soittavan
+     nauhaa jota siinä ei ollut — nauha ei siirtynyt kelalta toiselle,
+     koska kelassa ei ollut raitaa. */
+  const kay = S.playing || S.spooling;
+  if (kay && S.src==='reel') S.reelAng += dt*2.1*rate*(1+S.wowVis);
+  if (kay && (S.src==='A'||S.src==='B')) S.cassAng += dt*2.9*rate*(1+S.wowVis);
 }
 function progOf(k){
   const el=EL[k];
@@ -1742,7 +1827,68 @@ function frame(t){
 }
 
 /* ==========================  HIIRI  ========================== */
-let DRAG=null;
+let DRAG=null, TAP=null;
+/* ==========  SUURI SÄÄDIN  ==========
+   Pyöreät nupit ovat puhelimessa pieniä ja kiertäminen on hankalaa,
+   varsinkin sivua levennettyä. Napautus avaa saman säädön isona
+   pystypalkkina. Yksi rekisteri: nimi, rajat, luku ja kirjoitus. */
+const KNOBS={
+  vol:{n:'VOLUME',min:0,max:1.5,step:.05,get:()=>volVal,set:setVol,
+       fmt:v=>Math.round(v/1.5*100)+' %'},
+  bass:{n:'BASS',min:-10,max:10,step:.5,get:()=>bassVal,set:setBass,
+       fmt:v=>(v>0?'+':'')+v.toFixed(1)+' dB'},
+  treb:{n:'TREBLE',min:-10,max:10,step:.5,get:()=>trebVal,set:setTreb,
+       fmt:v=>(v>0?'+':'')+v.toFixed(1)+' dB'},
+  bal:{n:'BALANCE',min:-1,max:1,step:.05,get:()=>balVal,set:setBal,
+       fmt:v=>Math.abs(v)<.03?'KESKI':(v<0?'L ':'R ')+Math.round(Math.abs(v)*100)+' %'},
+  scopeGain:{n:'VOLTS/DIV',min:.25,max:4,step:.05,get:()=>S.scope.gain,
+       set:v=>{S.scope.gain=v;},fmt:v=>v.toFixed(2)+' ×'},
+  scopeTime:{n:'TIME/DIV',min:.12,max:1,step:.02,get:()=>S.scope.time,
+       set:v=>{S.scope.time=v;},fmt:v=>Math.round(v*100)+' %'},
+};
+let KP=null, kpDrag=false;
+function kpPaint(){
+  if (!KP) return;
+  const d=KNOBS[KP], v=d.get(), f=(v-d.min)/(d.max-d.min);
+  $('kpVal').textContent=d.fmt(v);
+  $('kpFill').style.height=(f*100)+'%';
+  $('kpGrip').style.bottom='calc('+(f*100)+'% - 11px)';
+}
+function openKnob(k){
+  if (!KNOBS[k]) return;
+  KP=k; $('kpName').textContent=KNOBS[k].n;
+  $('knobPad').classList.remove('hidden');
+  $('knobPad').setAttribute('aria-hidden','false');
+  kpPaint();
+}
+function closeKnob(){
+  const d=KP&&KNOBS[KP]; KP=null; kpDrag=false;
+  $('knobPad').classList.add('hidden');
+  $('knobPad').setAttribute('aria-hidden','true');
+  if (d && d.done) d.done();
+}
+function kpSet(v){
+  const d=KNOBS[KP]; if(!d) return;
+  d.set(Math.max(d.min,Math.min(d.max,v))); kpPaint();
+}
+function kpFromY(cy){
+  const d=KNOBS[KP]; if(!d) return;
+  const r=$('kpTrack').getBoundingClientRect();
+  const f=Math.max(0,Math.min(1,1-(cy-r.top)/r.height));
+  kpSet(d.min+f*(d.max-d.min));
+}
+$('kpTrack').addEventListener('pointerdown',e=>{
+  kpDrag=true; try{ $('kpTrack').setPointerCapture(e.pointerId); }catch(err){}
+  kpFromY(e.clientY); e.preventDefault();
+});
+$('kpTrack').addEventListener('pointermove',e=>{ if(kpDrag) kpFromY(e.clientY); });
+['pointerup','pointercancel'].forEach(ev=>
+  $('kpTrack').addEventListener(ev,()=>{ kpDrag=false; }));
+$('kpUp').addEventListener('click',()=>{ if(KP) kpSet(KNOBS[KP].get()+KNOBS[KP].step); });
+$('kpDown').addEventListener('click',()=>{ if(KP) kpSet(KNOBS[KP].get()-KNOBS[KP].step); });
+$('kpDone').addEventListener('click',closeKnob);
+$('knobPad').addEventListener('pointerdown',e=>{ if(e.target.id==='knobPad') closeKnob(); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&KP) closeKnob(); });
 function pos(e){
   const r=cv.getBoundingClientRect();
   return { x:(e.clientX-r.left)*cv.width/r.width, y:(e.clientY-r.top)*cv.height/r.height };
@@ -1758,6 +1904,8 @@ cv.addEventListener('pointerdown',e=>{
   // Paneeli auki: tornin napautus sulkee sen eikä paina laitteen nappeja.
   if (sheetOpen){ showSheet(''); return; }
   const p=pos(e), h=pick(p); if(!h) return;
+  // Napautus vs. veto: tätä käytetään vasta pointerupissa.
+  TAP={k:h.kind,x:e.clientX,y:e.clientY,t:Date.now(),touch:e.pointerType!=='mouse'};
   cv.setPointerCapture(e.pointerId);
   if (h.kind==='eq'){ DRAG={h,p0:p}; applyEqDrag(h,p); }
   else if (h.kind==='vol'||h.kind==='bass'||h.kind==='treb'||h.kind==='bal'){ DRAG={h,p0:p,v0:readVal(h.kind)}; }
@@ -1773,6 +1921,14 @@ cv.addEventListener('pointerdown',e=>{
   else if (h.kind==='pause'){ pause(); }
   else if (h.kind==='tr'){
     const d=h.data;
+    // Tyhjän laitteen kuljetinnappi ei saa kaapata soittoa itselleen:
+    // ennen esim. kelanauhurin STOP siirsi lähteen tyhjään kelaan,
+    // jolloin PLAY ei enää käynnistänyt mitään.
+    if (d.src!==S.src && d.cmd!=='rec' && deckEmpty(d.src)){
+      sanoTyhja(d.src,' — lataa sinne biisit ensin. Soitossa on '+
+        (DECK_NAME[S.src]||'viritin')+'.');
+      return;
+    }
     if (d.src!==S.src && d.cmd!=='rec') selectSource(d.src);
     if (d.cmd==='play') play();
     else if (d.cmd==='stop') stop();
@@ -1803,6 +1959,14 @@ cv.addEventListener('pointermove',e=>{
   }
 });
 ['pointerup','pointercancel'].forEach(ev=>cv.addEventListener(ev,e=>{
+  // Sormella napautettu nuppi: avataan iso pystysäädin. Kiertoveto
+  // kiekosta toimii edelleen, koska tämä vaatii paikallaan pysymisen.
+  if (TAP && KNOBS[TAP.k] && TAP.touch && e.type==='pointerup' &&
+      Math.abs(e.clientX-TAP.x)<10 && Math.abs(e.clientY-TAP.y)<10 &&
+      Date.now()-TAP.t<600){
+    const k=TAP.k; TAP=null; DRAG=null; openKnob(k); return;
+  }
+  TAP=null;
   DRAG=null;
 }));
 
